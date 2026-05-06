@@ -27,7 +27,7 @@ from pydantic import BaseModel
 # tests that monkeypatch and reload the module still get stable constants.
 # ---------------------------------------------------------------------------
 
-_CHAT_MODEL: str = os.environ.get("CHAT_MODEL", "qwen2.5-coder:30b")
+_CHAT_MODEL: str = os.environ.get("CHAT_MODEL", "qwen3-coder:30b")
 
 # ---------------------------------------------------------------------------
 # Public API

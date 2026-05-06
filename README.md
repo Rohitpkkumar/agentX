@@ -35,7 +35,7 @@ export OLLAMA_URL="http://server-ip:11434"       # Ollama on a server
 export LLM_PROVIDER=groq GROQ_API_KEY=sk-...    # or Groq cloud
 
 # Optional: choose a model
-export CHAT_MODEL="qwen2.5-coder:30b"           # default for Ollama
+export CHAT_MODEL="qwen3-coder:30b"             # default for Ollama
 export GROQ_MODEL="llama-3.3-70b-versatile"     # default for Groq
 
 # Go to your project and type agentX — that's it
@@ -71,7 +71,7 @@ agentX resume <id>            # resume a previous session
 |---|---|---|
 | `LLM_PROVIDER` | `ollama` | `ollama` or `groq` |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
-| `CHAT_MODEL` | `qwen2.5-coder:30b` | Model name for Ollama |
+| `CHAT_MODEL` | `qwen3-coder:30b` | Model name for Ollama |
 | `GROQ_API_KEY` | — | Groq API key |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Model name for Groq |
 
