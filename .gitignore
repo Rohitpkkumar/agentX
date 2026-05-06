@@ -1,0 +1,17 @@
+.claude/
+.agent/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg
+*.egg-info
+/local-coding-agent.egg-info/
