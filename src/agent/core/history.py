@@ -174,3 +174,14 @@ class ConversationHistory:
             "SELECT COUNT(*) FROM conv_messages WHERE session_id=?", (session_id,)
         ).fetchone()
         return row[0] if row else 0
+
+    def clear_session(self, session_id: str) -> None:
+        """Delete all messages for a session, keeping the session metadata."""
+        self._conn.execute(
+            "DELETE FROM conv_messages WHERE session_id=?", (session_id,)
+        )
+        self._conn.execute(
+            "UPDATE conv_sessions SET updated_at=? WHERE id=?",
+            (_now(), session_id),
+        )
+        self._conn.commit()

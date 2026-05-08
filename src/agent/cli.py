@@ -1,15 +1,23 @@
 """CLI entry point — works like Claude Code in a terminal.
 
 Commands:
-    agent chat      — persistent interactive session (remembers everything)
-    agent run       — one-shot task with optional session context
+    agent chat      — persistent interactive session
+    agent run       — one-shot task
     agent sessions  — list recent sessions
     agent resume    — resume a previous session by ID
     agent init      — initialise workspace and run first index
     agent index     — force full reindex
     agent rollback  — undo last git checkpoint
     agent config    — get/set trust mode and settings
-    agent log       — show task traces (legacy)
+    agent log       — show task traces
+
+Slash commands (inside chat):
+    /help     — show available commands
+    /clear    — clear current session history
+    /compact  — summarise and compress conversation
+    /tools    — list available tools
+    /memory   — show project conventions and recent episodes
+    /status   — show current session info
 """
 from __future__ import annotations
 
@@ -45,6 +53,8 @@ _TOOL_ICONS = {
     "run_shell": "⚡",
     "search_code": "🔍",
     "run_tests": "🧪",
+    "fetch_url": "🌐",
+    "run_subtask": "🤖",
     "git_status": "git",
     "git_diff": "git",
     "git_add": "git",
@@ -109,6 +119,8 @@ def _print_tool_start(name: str, args: dict[str, Any]) -> None:
         args.get("command")
         or args.get("path")
         or args.get("query")
+        or args.get("url")
+        or args.get("description", "")[:60]
         or ""
     )
     if len(hint) > 72:
@@ -124,36 +136,47 @@ def _print_tool_end(name: str, output: str, ok: bool) -> None:
         preview = output[:200]
         console.print(f"    [red]✗ Error:[/] {preview}")
     else:
-        # Show a compact preview for shell output
-        lines = [l for l in output.splitlines() if l.strip()]
-        if lines and name == "run_shell":
-            preview = lines[-1][:120] if lines else ""
+        lines = [ln for ln in output.splitlines() if ln.strip()]
+        if lines and name in {"run_shell", "run_tests", "run_subtask"}:
+            preview = lines[-1][:120]
             if preview:
                 console.print(f"    [dim]↳ {preview}[/]")
 
 
-def _print_response(text: str) -> None:
-    """Render the model's text response as markdown."""
-    if text.strip():
-        console.print()
-        try:
-            console.print(Markdown(text))
-        except Exception:
-            console.print(text)
-        console.print()
+# ---------------------------------------------------------------------------
+# Streaming callbacks factory
+# ---------------------------------------------------------------------------
 
+def _make_callbacks() -> tuple[Any, Any, Any, Any]:
+    """Return (on_content_token, on_content, on_tool_start, on_tool_end).
 
-def _session_banner(ws: Path, trust: str, session_id: str, resumed: bool = False) -> None:
-    action = "Resumed" if resumed else "New session"
-    console.print(Panel(
-        f"[bold]Local coding agent[/]   [dim]({action})[/]\n"
-        f"Workspace : [cyan]{ws}[/]\n"
-        f"Trust     : [cyan]{trust}[/]\n"
-        f"Session   : [dim]{session_id}[/]\n\n"
-        "Type your task. [dim]Type [bold]exit[/] to quit, [bold]sessions[/] to list history.[/]",
-        title="agent chat",
-        border_style="dim",
-    ))
+    on_content_token and on_content share state so content is printed exactly once.
+    """
+    did_stream: list[bool] = [False]
+
+    def on_content_token(token: str) -> None:
+        if not did_stream[0]:
+            did_stream[0] = True
+            sys.stdout.write("\n")  # blank line before first token
+        sys.stdout.write(token)
+        sys.stdout.flush()
+
+    def on_content(text: str) -> None:
+        if did_stream[0]:
+            # Tokens were already printed raw; just add spacing
+            did_stream[0] = False
+            sys.stdout.write("\n\n")
+            sys.stdout.flush()
+        elif text.strip():
+            # Non-streaming path — render as markdown
+            console.print()
+            try:
+                console.print(Markdown(text))
+            except Exception:
+                console.print(text)
+            console.print()
+
+    return on_content_token, on_content, _print_tool_start, _print_tool_end
 
 
 # ---------------------------------------------------------------------------
@@ -169,17 +192,159 @@ async def _do_turn(
 ) -> Any:
     from agent.core.loop import run_turn
 
-    result = await run_turn(
+    on_content_token, on_content, on_tool_start, on_tool_end = _make_callbacks()
+
+    return await run_turn(
         user_message,
         workspace=ws,
         session_id=session_id,
         history=history,
         trust=trust,  # type: ignore[arg-type]
-        on_content=_print_response,
-        on_tool_start=_print_tool_start,
-        on_tool_end=_print_tool_end,
+        on_content=on_content,
+        on_content_token=on_content_token,
+        on_tool_start=on_tool_start,
+        on_tool_end=on_tool_end,
     )
-    return result
+
+
+# ---------------------------------------------------------------------------
+# Slash command handler
+# ---------------------------------------------------------------------------
+
+def _handle_slash(
+    cmd: str,
+    session_id: str,
+    history: Any,
+    ws: Path,
+    trust: str,
+) -> None:
+    parts = cmd.strip().split(maxsplit=1)
+    name = parts[0].lower()
+
+    if name == "/help":
+        console.print(Panel(
+            "  [bold]/help[/]     — show this message\n"
+            "  [bold]/clear[/]    — clear session history (keep session ID)\n"
+            "  [bold]/compact[/]  — summarise and compress the conversation\n"
+            "  [bold]/tools[/]    — list all available tools\n"
+            "  [bold]/memory[/]   — show project conventions\n"
+            "  [bold]/status[/]   — show current session info\n\n"
+            "  [dim]Type [bold]exit[/] or press Ctrl+C to quit and save session.[/]",
+            title="Slash commands",
+            border_style="dim",
+        ))
+
+    elif name == "/clear":
+        history.clear_session(session_id)
+        console.print("[dim]Session history cleared.[/]")
+
+    elif name == "/tools":
+        from agent.tools.registry import all_tools
+        tools = all_tools()
+        table = Table(title="Available tools", border_style="dim", show_header=True)
+        table.add_column("Name", style="cyan", no_wrap=True)
+        table.add_column("Description", max_width=65)
+        for t in tools:
+            desc = (t.description or "").strip().splitlines()[0][:80]
+            table.add_row(t.name, desc)
+        console.print(table)
+
+    elif name == "/memory":
+        from agent.memory.project import ProjectStore
+        agent_dir = ws / ".agent"
+        try:
+            facts = ProjectStore(agent_dir / "state.db").all()
+        except Exception:
+            facts = []
+        if facts:
+            table = Table(title="Project conventions", border_style="dim")
+            table.add_column("Key", style="cyan")
+            table.add_column("Value")
+            for f in facts:
+                table.add_row(f.key, f.value)
+            console.print(table)
+        else:
+            console.print("[dim]No project conventions detected. Run 'agent init' first.[/]")
+
+    elif name == "/status":
+        info = history.get_session(session_id) or {}
+        msg_count = history.message_count(session_id)
+        console.print(Panel(
+            f"Session  : [dim]{session_id}[/]\n"
+            f"Messages : {msg_count}\n"
+            f"Trust    : [cyan]{trust}[/]\n"
+            f"Workspace: [cyan]{ws}[/]",
+            title="Session status",
+            border_style="dim",
+        ))
+
+    elif name == "/compact":
+        _compact_session(session_id, history, ws, trust)
+
+    else:
+        console.print(f"[yellow]Unknown command:[/] {name!r} — type [bold]/help[/] for the list.")
+
+
+def _compact_session(session_id: str, history: Any, ws: Path, trust: str) -> None:
+    """Summarise the conversation with the LLM and replace history with the summary."""
+    from agent.llm.chat import chat_model
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    msgs = history.load(session_id)
+    if not msgs:
+        console.print("[dim]Nothing to compact.[/]")
+        return
+
+    # Build a condensed transcript
+    lines = []
+    for m in msgs:
+        role = m.__class__.__name__.replace("Message", "")
+        content = str(m.content)[:300].replace("\n", " ")
+        lines.append(f"{role}: {content}")
+    transcript = "\n".join(lines[:60])  # cap input
+
+    prompt = (
+        "Summarise this conversation in 4-6 sentences, preserving:\n"
+        "- the original task or request\n"
+        "- key decisions made\n"
+        "- files created or modified\n"
+        "- current state / what still needs to be done\n\n"
+        f"Conversation:\n{transcript}"
+    )
+
+    try:
+        os.environ["AGENT_PROJECT_ROOT"] = str(ws)
+        os.environ["AGENT_TRUST_MODE"] = trust
+        model = chat_model(temperature=0.2)
+        result = asyncio.run(model.ainvoke([HumanMessage(content=prompt)]))
+        summary = result.content if isinstance(result.content, str) else str(result.content)
+
+        history.clear_session(session_id)
+        history.append(session_id, AIMessage(content=f"[Compacted session summary]\n\n{summary}"))
+
+        console.print("[green]Session compacted.[/]")
+        console.print()
+        console.print(Markdown(summary))
+        console.print()
+    except Exception as exc:
+        console.print(f"[yellow]Compact failed:[/] {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Turn result display
+# ---------------------------------------------------------------------------
+
+def _print_turn_result(result: Any) -> None:
+    if result.files_changed:
+        console.print("[dim]Files changed:[/]")
+        for f in result.files_changed:
+            console.print(f"  [green]✓[/] {f}")
+    if result.tool_calls_made > 0 or result.iterations > 1:
+        console.print(
+            f"[dim]({result.tool_calls_made} tool calls · {result.iterations} iterations)[/]"
+        )
+    if result.files_changed or result.tool_calls_made > 0:
+        console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +355,7 @@ async def _do_turn(
 def chat(
     workspace: Annotated[Optional[str], typer.Option("--workspace", "-w")] = None,
     trust: Annotated[Optional[str], typer.Option("--trust")] = None,
-    session: Annotated[Optional[str], typer.Option("--session", "-s", help="Resume a session ID")] = None,
+    session: Annotated[Optional[str], typer.Option("--session", "-s")] = None,
 ) -> None:
     """Persistent interactive session — remembers everything across turns."""
     ws = Path(workspace).resolve() if workspace else _workspace()
@@ -238,20 +403,17 @@ def chat(
             if text.lower() == "sessions":
                 _print_sessions(history)
                 continue
+            if text.startswith("/"):
+                _handle_slash(text, session_id, history, ws, trust_mode)
+                continue
 
-            # Auto-title session from first message
             if history.message_count(session_id) == 0:
-                title = text[:60]
-                history.update_title(session_id, title)
+                history.update_title(session_id, text[:60])
 
             console.print(Rule(style="dim"))
             try:
                 result = asyncio.run(_do_turn(text, ws, session_id, trust_mode, history))
-                if result.files_changed:
-                    console.print("[dim]Files changed:[/]")
-                    for f in result.files_changed:
-                        console.print(f"  [green]✓[/] {f}")
-                    console.print()
+                _print_turn_result(result)
             except KeyboardInterrupt:
                 console.print("\n[yellow]Interrupted.[/]")
             except Exception as exc:
@@ -261,7 +423,7 @@ def chat(
 
 
 # ---------------------------------------------------------------------------
-# agent run (one-shot with session context)
+# agent run (one-shot)
 # ---------------------------------------------------------------------------
 
 @app.command()
@@ -269,7 +431,7 @@ def run(
     request: Annotated[str, typer.Argument(help="Coding task to execute")],
     workspace: Annotated[Optional[str], typer.Option("--workspace", "-w")] = None,
     trust: Annotated[Optional[str], typer.Option("--trust")] = None,
-    session: Annotated[Optional[str], typer.Option("--session", "-s", help="Use existing session for context")] = None,
+    session: Annotated[Optional[str], typer.Option("--session", "-s")] = None,
 ) -> None:
     """Execute a one-shot coding task."""
     ws = Path(workspace).resolve() if workspace else _workspace()
@@ -294,16 +456,9 @@ def run(
 
         try:
             result = asyncio.run(_do_turn(request, ws, session_id, trust_mode, history))
-
-            if result.files_changed:
-                console.print("[bold]Files changed:[/]")
-                for f in result.files_changed:
-                    console.print(f"  [green]✓[/] {f}")
-                console.print()
-
+            _print_turn_result(result)
             console.print(f"[dim]Session ID: {session_id}[/]")
-            console.print(f"[dim]Continue with: agent chat --session {session_id}[/]")
-
+            console.print(f"[dim]Continue: agent chat --session {session_id}[/]")
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted.[/]")
             console.print(f"[dim]Resume: agent chat --session {session_id}[/]")
@@ -348,11 +503,11 @@ def _print_sessions(history: Any, limit: int = 20) -> None:
         updated = (r.get("updated_at") or "")[:16].replace("T", " ")
         table.add_row(_short_id(sid), title, updated)
     console.print(table)
-    console.print("[dim]Resume a session: agent chat --session <ID>[/]")
+    console.print("[dim]Resume: agent chat --session <ID>[/]")
 
 
 # ---------------------------------------------------------------------------
-# agent resume (alias for chat --session)
+# agent resume
 # ---------------------------------------------------------------------------
 
 @app.command()
@@ -362,7 +517,6 @@ def resume(
     trust: Annotated[Optional[str], typer.Option("--trust")] = None,
 ) -> None:
     """Resume a previous session by its ID."""
-    # Find full ID if short prefix given
     ws = Path(workspace).resolve() if workspace else _workspace()
     history = _get_history(ws)
     try:
@@ -375,14 +529,8 @@ def resume(
     finally:
         history.close()
 
-    # Delegate to chat with --session
     ctx = typer.get_current_context()
-    ctx.invoke(
-        chat,
-        workspace=workspace,
-        trust=trust,
-        session=full_id,
-    )
+    ctx.invoke(chat, workspace=workspace, trust=trust, session=full_id)
 
 
 # ---------------------------------------------------------------------------
@@ -466,8 +614,8 @@ def rollback(
     """Undo last task via git checkpoint."""
     ws = Path(workspace).resolve() if workspace else _workspace()
     os.environ["AGENT_PROJECT_ROOT"] = str(ws)
-    from agent.tools.git import git_rollback
-    result = git_rollback.invoke({})
+    from agent.tools.git import git_rollback as _git_rollback
+    result = _git_rollback.invoke({})
     if "error" in str(result).lower() or "fail" in str(result).lower():
         err_console.print(str(result))
         raise typer.Exit(1)
@@ -475,7 +623,7 @@ def rollback(
 
 
 # ---------------------------------------------------------------------------
-# agent log (legacy)
+# agent log
 # ---------------------------------------------------------------------------
 
 @app.command(name="log")
@@ -484,7 +632,7 @@ def log_cmd(
     limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
     workspace: Annotated[Optional[str], typer.Option("--workspace", "-w")] = None,
 ) -> None:
-    """Show recent task traces (legacy observability log)."""
+    """Show recent task traces."""
     ws = Path(workspace).resolve() if workspace else _workspace()
     logger = _get_logger(ws)
     try:
@@ -562,7 +710,7 @@ def config_cmd(
 
 
 # ---------------------------------------------------------------------------
-# agent serve — HTTP API server for remote thin-client access
+# agent serve
 # ---------------------------------------------------------------------------
 
 @app.command()
@@ -572,7 +720,7 @@ def serve(
     workspace: Annotated[Optional[str], typer.Option("--workspace", "-w")] = None,
     trust: Annotated[str, typer.Option("--trust")] = "trusted",
 ) -> None:
-    """Start the agent as an HTTP API server (for remote thin-client access)."""
+    """Start the agent as an HTTP API server."""
     try:
         import uvicorn  # noqa: F401
     except ImportError:
@@ -589,8 +737,7 @@ def serve(
         f"[bold]Agent API server[/]\n"
         f"Workspace : [cyan]{ws}[/]\n"
         f"Trust     : [cyan]{trust}[/]\n"
-        f"Listening : [cyan]http://{host}:{port}[/]\n\n"
-        "Connect from any machine on the same network with [bold]agentX[/].",
+        f"Listening : [cyan]http://{host}:{port}[/]",
         title="agent serve",
         border_style="dim",
     ))
@@ -600,28 +747,40 @@ def serve(
 
 
 # ---------------------------------------------------------------------------
-# agentX entry point — type `agentX` in any directory to start coding
+# Session banner
+# ---------------------------------------------------------------------------
+
+def _session_banner(ws: Path, trust: str, session_id: str, resumed: bool = False) -> None:
+    action = "Resumed" if resumed else "New session"
+    console.print(Panel(
+        f"[bold]Local coding agent[/]   [dim]({action})[/]\n"
+        f"Workspace : [cyan]{ws}[/]\n"
+        f"Trust     : [cyan]{trust}[/]\n"
+        f"Session   : [dim]{session_id}[/]\n\n"
+        "Type your task.  [dim][bold]/help[/] for commands · [bold]exit[/] to quit[/]",
+        title="agentX",
+        border_style="dim",
+    ))
+
+
+# ---------------------------------------------------------------------------
+# agentX entry point
 # ---------------------------------------------------------------------------
 
 def agentx_main() -> None:
     """Entry point for the `agentX` command.
 
     Usage:
-        agentX                    → interactive chat in current directory
+        agentX                    → interactive chat
         agentX "fix the bug"      → one-shot task
         agentX sessions           → list saved sessions
-        agentX resume <id>        → resume a previous session
+        agentX resume <id>        → resume a session
     """
-    import sys
-
     args = sys.argv[1:]
     ws = _workspace()
-
-    # Ensure .agent/ exists silently (no init ceremony needed)
     _agent_dir(ws).mkdir(parents=True, exist_ok=True)
 
     if not args:
-        # Just `agentX` → start interactive chat
         _agentx_chat(ws)
     elif args[0] == "sessions":
         history = _get_history(ws)
@@ -634,24 +793,23 @@ def agentx_main() -> None:
     elif args[0] in {"help", "--help", "-h"}:
         console.print(Panel(
             "[bold]agentX[/] — AI coding agent\n\n"
-            "  [bold]agentX[/]                   start interactive session\n"
-            "  [bold]agentX[/] [italic]\"do something\"[/]   one-shot task\n"
-            "  [bold]agentX sessions[/]           list saved sessions\n"
-            "  [bold]agentX resume[/] [italic]<id>[/]       resume a session\n\n"
+            "  [bold]agentX[/]                    start interactive session\n"
+            "  [bold]agentX[/] [italic]\"do something\"[/]    one-shot task\n"
+            "  [bold]agentX sessions[/]            list saved sessions\n"
+            "  [bold]agentX resume[/] [italic]<id>[/]        resume a session\n\n"
+            "Inside a session, slash commands are available — type [bold]/help[/].\n\n"
             "LLM config:\n"
-            "  OLLAMA_URL=http://server:11434   (default, Ollama)\n"
-            "  LLM_PROVIDER=groq GROQ_API_KEY=sk-...   (Groq cloud)",
+            "  OLLAMA_URL=http://server:11434\n"
+            "  LLM_PROVIDER=groq  GROQ_API_KEY=sk-...",
             title="agentX help",
             border_style="dim",
         ))
     else:
-        # Treat args as a one-shot task
         task = " ".join(args)
         _agentx_run(ws, task)
 
 
 def _agentx_chat(ws: Path, session_id: str | None = None) -> None:
-    """Interactive multi-turn session — the core agentX experience."""
     cfg = _load_config(ws)
     trust_mode = cfg.get("trust_mode", "trusted")
     os.environ["AGENT_PROJECT_ROOT"] = str(ws)
@@ -662,7 +820,6 @@ def _agentx_chat(ws: Path, session_id: str | None = None) -> None:
 
     try:
         if session_id:
-            # Expand short prefix to full ID
             all_sess = history.list_sessions(100)
             matches = [s for s in all_sess if s["id"].startswith(session_id)]
             if not matches:
@@ -695,6 +852,9 @@ def _agentx_chat(ws: Path, session_id: str | None = None) -> None:
             if user_input.lower() == "sessions":
                 _print_sessions(history)
                 continue
+            if user_input.startswith("/"):
+                _handle_slash(user_input, session_id, history, ws, trust_mode)
+                continue
 
             if history.message_count(session_id) == 0:
                 history.update_title(session_id, user_input[:60])
@@ -702,11 +862,7 @@ def _agentx_chat(ws: Path, session_id: str | None = None) -> None:
             console.print(Rule(style="dim"))
             try:
                 result = asyncio.run(_do_turn(user_input, ws, session_id, trust_mode, history))
-                if result.files_changed:
-                    console.print("[dim]Files changed:[/]")
-                    for f in result.files_changed:
-                        console.print(f"  [green]✓[/] {f}")
-                    console.print()
+                _print_turn_result(result)
             except KeyboardInterrupt:
                 console.print("\n[yellow]Interrupted.[/]")
             except Exception as exc:
@@ -716,7 +872,6 @@ def _agentx_chat(ws: Path, session_id: str | None = None) -> None:
 
 
 def _agentx_run(ws: Path, task: str) -> None:
-    """One-shot task — run a single request and exit."""
     cfg = _load_config(ws)
     trust_mode = cfg.get("trust_mode", "trusted")
     os.environ["AGENT_PROJECT_ROOT"] = str(ws)
@@ -729,11 +884,7 @@ def _agentx_run(ws: Path, task: str) -> None:
         console.print()
         try:
             result = asyncio.run(_do_turn(task, ws, session_id, trust_mode, history))
-            if result.files_changed:
-                console.print("[bold]Files changed:[/]")
-                for f in result.files_changed:
-                    console.print(f"  [green]✓[/] {f}")
-                console.print()
+            _print_turn_result(result)
             console.print(f"[dim]Continue: agentX resume {session_id[:8]}[/]")
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted.[/]")

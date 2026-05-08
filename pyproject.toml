@@ -18,6 +18,7 @@ dependencies = [
     "rich>=13,<14",
     "aiosqlite>=0.19",
     "langgraph-checkpoint-sqlite>=2.0",
+    "tomli-w>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -35,8 +36,11 @@ serve = [
 groq = [
     "langchain-groq>=1.0",
 ]
+search = [
+    "duckduckgo-search>=6,<7",
+]
 all = [
-    "local-coding-agent[index,serve,groq]",
+    "local-coding-agent[index,serve,groq,search]",
 ]
 dev = [
     "pytest>=8,<9",

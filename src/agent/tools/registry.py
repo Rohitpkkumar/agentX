@@ -6,7 +6,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
-from agent.tools.files import edit_file, list_dir, read_file, write_file
+from agent.tools.files import edit_file, edit_file_multi, find_files, list_dir, read_file, write_file
 from agent.tools.git import (
     git_add,
     git_checkpoint,
@@ -18,7 +18,10 @@ from agent.tools.git import (
 )
 from agent.tools.search import search_code
 from agent.tools.shell import run_shell
+from agent.tools.subtask import run_subtask
 from agent.tools.tests import run_tests
+from agent.tools.todo import todo_read, todo_write
+from agent.tools.web import fetch_url, search_web
 
 
 class ToolResult(BaseModel):
@@ -29,32 +32,39 @@ class ToolResult(BaseModel):
 
 
 def all_tools() -> list[BaseTool]:
-    """Return every registered tool as a LangChain BaseTool, ready for bind_tools()."""
+    """Return all registered tools ready for bind_tools()."""
     return [
-        read_file,  # type: ignore[list-item]
-        write_file,  # type: ignore[list-item]
-        edit_file,  # type: ignore[list-item]
-        list_dir,  # type: ignore[list-item]
-        run_shell,  # type: ignore[list-item]
-        search_code,  # type: ignore[list-item]
-        run_tests,  # type: ignore[list-item]
-        git_status,  # type: ignore[list-item]
-        git_diff,  # type: ignore[list-item]
-        git_add,  # type: ignore[list-item]
-        git_commit,  # type: ignore[list-item]
-        git_log,  # type: ignore[list-item]
+        # File operations
+        read_file,       # type: ignore[list-item]
+        write_file,      # type: ignore[list-item]
+        edit_file,       # type: ignore[list-item]
+        edit_file_multi, # type: ignore[list-item]
+        list_dir,        # type: ignore[list-item]
+        find_files,      # type: ignore[list-item]
+        # Shell & search
+        run_shell,       # type: ignore[list-item]
+        search_code,     # type: ignore[list-item]
+        run_tests,       # type: ignore[list-item]
+        # Git
+        git_status,      # type: ignore[list-item]
+        git_diff,        # type: ignore[list-item]
+        git_add,         # type: ignore[list-item]
+        git_commit,      # type: ignore[list-item]
+        git_log,         # type: ignore[list-item]
         git_checkpoint,  # type: ignore[list-item]
-        git_rollback,  # type: ignore[list-item]
+        git_rollback,    # type: ignore[list-item]
+        # Web (yolo mode)
+        fetch_url,       # type: ignore[list-item]
+        search_web,      # type: ignore[list-item]
+        # Agent & task
+        run_subtask,     # type: ignore[list-item]
+        todo_write,      # type: ignore[list-item]
+        todo_read,       # type: ignore[list-item]
     ]
 
 
 def dispatch(tool_call: dict[str, Any]) -> ToolResult:
-    """Execute a tool by name with the provided args dict.
-
-    Returns a ToolResult wrapping ok/output/error/duration_ms.
-    Unknown tool names or argument validation failures are returned as
-    ToolResult(ok=False, ...) rather than raised.
-    """
+    """Execute a tool by name. Returns ToolResult(ok=False) for unknown tools."""
     tool_name: str = tool_call.get("name", "")
     tool_args: dict[str, Any] = tool_call.get("args", {}) or {}
 
@@ -62,18 +72,13 @@ def dispatch(tool_call: dict[str, Any]) -> ToolResult:
 
     if tool_name not in tool_map:
         return ToolResult(
-            ok=False,
-            output="",
-            error=f"Unknown tool: {tool_name!r}",
-            duration_ms=0,
+            ok=False, output="", error=f"Unknown tool: {tool_name!r}", duration_ms=0,
         )
 
     selected = tool_map[tool_name]
     start = time.monotonic()
     try:
         result = selected.invoke(tool_args)
-        duration_ms = int((time.monotonic() - start) * 1000)
-        return ToolResult(ok=True, output=result, duration_ms=duration_ms)
+        return ToolResult(ok=True, output=result, duration_ms=int((time.monotonic() - start) * 1000))
     except Exception as exc:
-        duration_ms = int((time.monotonic() - start) * 1000)
-        return ToolResult(ok=False, output="", error=str(exc), duration_ms=duration_ms)
+        return ToolResult(ok=False, output="", error=str(exc), duration_ms=int((time.monotonic() - start) * 1000))

@@ -12,6 +12,7 @@ from agent.safety.policy import (
     TrustMode,
     is_network_allowed,
     is_shell_allowed,
+    load_shell_allowlist,
 )
 
 _DEFAULT_TIMEOUT = 120
@@ -29,10 +30,14 @@ def _get_project_root() -> Path:
     return Path(root).resolve() if root else Path.cwd().resolve()
 
 
-def _check_network(command: str, trust: TrustMode) -> None:
-    """Raise PermissionError if the command invokes a network tool and trust != yolo."""
+def _check_network(command: str, trust: TrustMode, allowlist: list[str]) -> None:
+    """Raise PermissionError if the command invokes a network binary unless allowed."""
     allowed, reason = is_network_allowed(trust)
     if allowed:
+        return
+    # Allowlist can override the network block
+    from agent.safety.policy import is_command_in_allowlist
+    if allowlist and is_command_in_allowlist(command, allowlist):
         return
     first_token = command.strip().split()[0] if command.strip() else ""
     binary_name = Path(first_token).name
@@ -46,17 +51,23 @@ def run_shell(command: str, timeout: int = _DEFAULT_TIMEOUT) -> str:
 
     Permanently blocked (all trust modes): rm -rf, dd, mkfs, shred, fdisk, parted,
     writes to /dev/.
-    Blocked in readonly mode: any write-pattern command.
-    Network commands (curl, wget, ssh, …) are blocked unless trust mode is yolo.
+    Blocked in readonly mode: write-pattern commands (unless in shell_allowlist).
+    Network commands blocked unless trust=yolo or command is in shell_allowlist.
+
+    Add trusted commands to .agent/config.toml:
+        shell_allowlist = ["npm run *", "pytest *", "python -m pytest *"]
+
     Commands time out after `timeout` seconds (default 120).
     """
     trust = _get_trust()
+    project_root = _get_project_root()
+    allowlist = load_shell_allowlist(project_root)
 
-    allowed, reason = is_shell_allowed(command, trust)
+    allowed, reason = is_shell_allowed(command, trust, allowlist)
     if not allowed:
         raise PermissionError(f"Command blocked by policy: {reason}")
 
-    _check_network(command, trust)
+    _check_network(command, trust, allowlist)
 
     result = subprocess.run(
         command,
@@ -64,7 +75,7 @@ def run_shell(command: str, timeout: int = _DEFAULT_TIMEOUT) -> str:
         capture_output=True,
         text=True,
         timeout=timeout,
-        cwd=str(_get_project_root()),
+        cwd=str(project_root),
     )
 
     parts: list[str] = []
