@@ -1,14 +1,12 @@
-# Local Coding Agent
+# agentX — Local Coding Agent
 
-A local AI coding agent that runs on your machine and uses a remote LLM (Ollama or Groq).
+A local AI coding agent that runs entirely on your machine using Ollama.
 Works like Claude Code — persistent sessions, full file/git/shell access, ReAct loop.
 
 ## Requirements
 
 - Python 3.11+
-- An LLM provider:
-  - **Ollama** running on a server: `OLLAMA_URL=http://server-ip:11434`
-  - **Groq** cloud API: `LLM_PROVIDER=groq GROQ_API_KEY=<your-key>`
+- [Ollama](https://ollama.ai) running locally or on a server
 - `rg` (ripgrep) on PATH for code search — `brew install ripgrep`
 
 ## Install
@@ -20,9 +18,6 @@ pip install "git+https://github.com/Rohitpkkumar/agentX.git"
 # With code indexing (vector search, symbol index)
 pip install "git+https://github.com/Rohitpkkumar/agentX.git#egg=local-coding-agent[index]"
 
-# With Groq support
-pip install "git+https://github.com/Rohitpkkumar/agentX.git#egg=local-coding-agent[groq]"
-
 # Everything
 pip install "git+https://github.com/Rohitpkkumar/agentX.git#egg=local-coding-agent[all]"
 ```
@@ -30,13 +25,11 @@ pip install "git+https://github.com/Rohitpkkumar/agentX.git#egg=local-coding-age
 ## Quickstart
 
 ```bash
-# Point at your LLM (pick one)
-export OLLAMA_URL="http://server-ip:11434"       # Ollama on a server
-export LLM_PROVIDER=groq GROQ_API_KEY=sk-...    # or Groq cloud
+# Pull a model in Ollama
+ollama pull qwen3-coder:30b
 
-# Optional: choose a model
-export CHAT_MODEL="qwen3-coder:30b"             # default for Ollama
-export GROQ_MODEL="llama-3.3-70b-versatile"     # default for Groq
+# Optional: point at a remote Ollama instance
+export OLLAMA_URL="http://server-ip:11434"   # default: http://localhost:11434
 
 # Go to your project and type agentX — that's it
 cd /path/to/your/project
@@ -69,11 +62,9 @@ agentX resume <id>            # resume a previous session
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_PROVIDER` | `ollama` | `ollama` or `groq` |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
-| `CHAT_MODEL` | `qwen3-coder:30b` | Model name for Ollama |
-| `GROQ_API_KEY` | — | Groq API key |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Model name for Groq |
+| `CHAT_MODEL` | `qwen3-coder:30b` | Model name |
+| `OLLAMA_TIMEOUT` | `120` | Request timeout in seconds |
 
 ## Trust Modes
 
@@ -97,3 +88,4 @@ agent chat --trust readonly     # or pass per-session
 - Run tests and interpret failures
 - Persistent sessions — resume any conversation by ID
 - Code indexing + vector search (with `[index]` extras)
+- Web fetch and search (trust=yolo, with `[search]` extras)

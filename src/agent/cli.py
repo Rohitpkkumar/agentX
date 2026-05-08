@@ -799,8 +799,9 @@ def agentx_main() -> None:
             "  [bold]agentX resume[/] [italic]<id>[/]        resume a session\n\n"
             "Inside a session, slash commands are available — type [bold]/help[/].\n\n"
             "LLM config:\n"
-            "  OLLAMA_URL=http://server:11434\n"
-            "  LLM_PROVIDER=groq  GROQ_API_KEY=sk-...",
+            "  OLLAMA_URL=http://localhost:11434  (default)\n"
+            "  CHAT_MODEL=qwen3-coder:30b         (default)\n"
+            "  OLLAMA_TIMEOUT=120                 (seconds)",
             title="agentX help",
             border_style="dim",
         ))

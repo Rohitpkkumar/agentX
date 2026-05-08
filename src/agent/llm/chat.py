@@ -1,12 +1,9 @@
-"""LLM provider abstraction — Ollama (default) or Groq.
+"""LLM provider — Ollama (local).
 
-Select the provider via the LLM_PROVIDER environment variable:
-  LLM_PROVIDER=ollama  (default)  — uses ChatOllama + local qwen2.5-coder:30b
-  LLM_PROVIDER=groq               — uses ChatGroq + GROQ_API_KEY
-
-All other env vars apply per-provider:
-  Ollama: OLLAMA_URL, CHAT_MODEL, OLLAMA_TIMEOUT
-  Groq:   GROQ_API_KEY, GROQ_MODEL
+Configure via environment variables:
+  OLLAMA_URL     Ollama server URL (default: http://localhost:11434)
+  CHAT_MODEL     Model name        (default: qwen3-coder:30b)
+  OLLAMA_TIMEOUT Request timeout in seconds (default: 120)
 
 Three public helpers cover every LLM interaction pattern:
   chat_model()  — plain chat client
@@ -22,40 +19,16 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
-# ---------------------------------------------------------------------------
-# Module-level defaults — read at import time for the Ollama path so that
-# tests that monkeypatch and reload the module still get stable constants.
-# ---------------------------------------------------------------------------
-
 _CHAT_MODEL: str = os.environ.get("CHAT_MODEL", "qwen3-coder:30b")
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def chat_model(temperature: float = 0) -> BaseChatModel:
-    """Return a configured chat model for the active provider.
-
-    Reads LLM_PROVIDER, GROQ_API_KEY, OLLAMA_URL etc. at call time so that
-    the provider can be switched between tests without reloading the module.
+    """Return a configured ChatOllama instance.
 
     Args:
         temperature: Sampling temperature (0 = deterministic for planning/tools,
                      0.2 for free-form text generation).
     """
-    provider = os.environ.get("LLM_PROVIDER", "ollama").lower()
-
-    if provider == "groq":
-        from langchain_groq import ChatGroq
-
-        return ChatGroq(
-            model=os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
-            api_key=os.environ.get("GROQ_API_KEY", ""),  # type: ignore[arg-type]
-            temperature=temperature,
-        )
-
-    # Default: Ollama
     from langchain_ollama import ChatOllama
 
     model_name = os.environ.get("CHAT_MODEL", _CHAT_MODEL)

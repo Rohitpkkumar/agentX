@@ -33,14 +33,11 @@ serve = [
     "fastapi>=0.111,<1",
     "uvicorn>=0.29,<1",
 ]
-groq = [
-    "langchain-groq>=1.0",
-]
 search = [
     "duckduckgo-search>=6,<7",
 ]
 all = [
-    "local-coding-agent[index,serve,groq,search]",
+    "local-coding-agent[index,serve,search]",
 ]
 dev = [
     "pytest>=8,<9",
