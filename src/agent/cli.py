@@ -94,6 +94,57 @@ def _save_config(cfg: dict[str, Any], ws: Path | None = None) -> None:
     p.write_bytes(tomli_w.dumps(cfg).encode())
 
 
+def _apply_llm_config(cfg: dict[str, Any]) -> None:
+    """Push ollama_url and chat_model from config into env vars for llm/chat.py."""
+    if "ollama_url" in cfg:
+        os.environ["OLLAMA_URL"] = str(cfg["ollama_url"])
+    if "chat_model" in cfg:
+        os.environ["CHAT_MODEL"] = str(cfg["chat_model"])
+
+
+def _first_run_setup(ws: Path) -> dict[str, Any]:
+    """Interactive setup wizard shown the first time agentX runs in a project."""
+    console.print(Panel(
+        "[bold]First-time setup[/]\n\n"
+        "agentX needs to know where your Ollama instance is running.\n"
+        "Press [bold]Enter[/] to accept the default shown in brackets.\n\n"
+        "  [dim]Local Ollama :[/]  http://localhost:11434\n"
+        "  [dim]Remote server:[/]  http://192.168.x.x:11434",
+        title="agentX — setup",
+        border_style="cyan",
+    ))
+
+    url = typer.prompt(
+        "\nOllama URL",
+        default="http://localhost:11434",
+    ).strip()
+
+    model = typer.prompt(
+        "Model name",
+        default="qwen3-coder:30b",
+    ).strip()
+
+    cfg: dict[str, Any] = {
+        "trust_mode": "trusted",
+        "ollama_url": url,
+        "chat_model": model,
+    }
+    try:
+        _save_config(cfg, ws)
+    except ImportError:
+        _config_path(ws).write_text(
+            f'trust_mode = "trusted"\nollama_url = "{url}"\nchat_model = "{model}"\n'
+        )
+
+    console.print(f"\n[green]Config saved[/] → {_config_path(ws)}\n")
+    console.print(
+        "[dim]To change later:[/]\n"
+        f"  agent config ollama_url <URL>\n"
+        f"  agent config chat_model <model>\n"
+    )
+    return cfg
+
+
 def _get_history(ws: Path) -> Any:
     from agent.core.history import ConversationHistory
     _agent_dir(ws).mkdir(parents=True, exist_ok=True)
@@ -267,13 +318,17 @@ def _handle_slash(
             console.print("[dim]No project conventions detected. Run 'agent init' first.[/]")
 
     elif name == "/status":
-        info = history.get_session(session_id) or {}
         msg_count = history.message_count(session_id)
+        ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+        chat_model_name = os.environ.get("CHAT_MODEL", "qwen3-coder:30b")
         console.print(Panel(
             f"Session  : [dim]{session_id}[/]\n"
             f"Messages : {msg_count}\n"
             f"Trust    : [cyan]{trust}[/]\n"
-            f"Workspace: [cyan]{ws}[/]",
+            f"Ollama   : [cyan]{ollama_url}[/]\n"
+            f"Model    : [cyan]{chat_model_name}[/]\n"
+            f"Workspace: [cyan]{ws}[/]\n\n"
+            "[dim]Change model/URL: agent config ollama_url <url>  |  agent config chat_model <model>[/]",
             title="Session status",
             border_style="dim",
         ))
@@ -363,6 +418,7 @@ def chat(
     trust_mode = trust or cfg.get("trust_mode", "trusted")
     os.environ["AGENT_PROJECT_ROOT"] = str(ws)
     os.environ["AGENT_TRUST_MODE"] = trust_mode
+    _apply_llm_config(cfg)
 
     history = _get_history(ws)
     resumed = False
@@ -439,6 +495,7 @@ def run(
     trust_mode = trust or cfg.get("trust_mode", "trusted")
     os.environ["AGENT_PROJECT_ROOT"] = str(ws)
     os.environ["AGENT_TRUST_MODE"] = trust_mode
+    _apply_llm_config(cfg)
 
     history = _get_history(ws)
     try:
@@ -547,13 +604,47 @@ def init(
     agent_dir = _agent_dir(ws)
     agent_dir.mkdir(parents=True, exist_ok=True)
 
-    cfg: dict[str, Any] = {"trust_mode": trust, "project_root": str(ws)}
+    # Load existing config so we don't overwrite existing ollama_url/chat_model
+    existing = _load_config(ws)
+
+    console.print(Panel(
+        "Configure the Ollama connection for this project.\n"
+        "Press [bold]Enter[/] to keep the current value shown in brackets.",
+        title="agent init — LLM setup",
+        border_style="cyan",
+    ))
+
+    url = typer.prompt(
+        "Ollama URL",
+        default=existing.get("ollama_url", "http://localhost:11434"),
+    ).strip()
+
+    model = typer.prompt(
+        "Model name",
+        default=existing.get("chat_model", "qwen3-coder:30b"),
+    ).strip()
+
+    cfg: dict[str, Any] = {
+        "trust_mode": trust,
+        "ollama_url": url,
+        "chat_model": model,
+    }
     try:
         _save_config(cfg, ws)
     except ImportError:
-        _config_path(ws).write_text(f'trust_mode = "{trust}"\nproject_root = "{ws}"\n')
+        _config_path(ws).write_text(
+            f'trust_mode = "{trust}"\nollama_url = "{url}"\nchat_model = "{model}"\n'
+        )
 
-    console.print(Panel(f"[green]Initialised[/] .agent/ in {ws}", title="agent init"))
+    _apply_llm_config(cfg)
+    console.print(Panel(
+        f"[green]Initialised[/] .agent/ in {ws}\n\n"
+        f"  Ollama URL : [cyan]{url}[/]\n"
+        f"  Model      : [cyan]{model}[/]\n"
+        f"  Trust mode : [cyan]{trust}[/]\n\n"
+        "Change any value with: [bold]agent config <key> <value>[/]",
+        title="agent init",
+    ))
 
     try:
         from agent.memory.project import ProjectStore
@@ -752,9 +843,13 @@ def serve(
 
 def _session_banner(ws: Path, trust: str, session_id: str, resumed: bool = False) -> None:
     action = "Resumed" if resumed else "New session"
+    ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+    chat_model_name = os.environ.get("CHAT_MODEL", "qwen3-coder:30b")
     console.print(Panel(
         f"[bold]Local coding agent[/]   [dim]({action})[/]\n"
         f"Workspace : [cyan]{ws}[/]\n"
+        f"Ollama    : [cyan]{ollama_url}[/]\n"
+        f"Model     : [cyan]{chat_model_name}[/]\n"
         f"Trust     : [cyan]{trust}[/]\n"
         f"Session   : [dim]{session_id}[/]\n\n"
         "Type your task.  [dim][bold]/help[/] for commands · [bold]exit[/] to quit[/]",
@@ -780,6 +875,12 @@ def agentx_main() -> None:
     ws = _workspace()
     _agent_dir(ws).mkdir(parents=True, exist_ok=True)
 
+    # First-run setup: if no config exists, ask for Ollama URL and model
+    cfg = _load_config(ws)
+    if not cfg:
+        cfg = _first_run_setup(ws)
+    _apply_llm_config(cfg)
+
     if not args:
         _agentx_chat(ws)
     elif args[0] == "sessions":
@@ -798,10 +899,12 @@ def agentx_main() -> None:
             "  [bold]agentX sessions[/]            list saved sessions\n"
             "  [bold]agentX resume[/] [italic]<id>[/]        resume a session\n\n"
             "Inside a session, slash commands are available — type [bold]/help[/].\n\n"
-            "LLM config:\n"
-            "  OLLAMA_URL=http://localhost:11434  (default)\n"
-            "  CHAT_MODEL=qwen3-coder:30b         (default)\n"
-            "  OLLAMA_TIMEOUT=120                 (seconds)",
+            "LLM config (saved in .agent/config.toml):\n"
+            "  agent config ollama_url http://localhost:11434\n"
+            "  agent config chat_model qwen3-coder:30b\n\n"
+            "Or override for one session with env vars:\n"
+            "  OLLAMA_URL=http://server:11434 agentX\n"
+            "  CHAT_MODEL=qwen3-coder:14b agentX",
             title="agentX help",
             border_style="dim",
         ))
@@ -815,6 +918,7 @@ def _agentx_chat(ws: Path, session_id: str | None = None) -> None:
     trust_mode = cfg.get("trust_mode", "trusted")
     os.environ["AGENT_PROJECT_ROOT"] = str(ws)
     os.environ["AGENT_TRUST_MODE"] = trust_mode
+    _apply_llm_config(cfg)
 
     history = _get_history(ws)
     resumed = False
@@ -877,6 +981,7 @@ def _agentx_run(ws: Path, task: str) -> None:
     trust_mode = cfg.get("trust_mode", "trusted")
     os.environ["AGENT_PROJECT_ROOT"] = str(ws)
     os.environ["AGENT_TRUST_MODE"] = trust_mode
+    _apply_llm_config(cfg)
 
     history = _get_history(ws)
     try:
